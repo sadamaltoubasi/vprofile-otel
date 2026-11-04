@@ -1,81 +1,155 @@
-name: best_practice
-on: workflow_dispatch
-env:
-  AWS_REGION: us-east-1
-  ECR_REPOSITORY: vprofileapp
-  EKS_CLUSTER: vprofile-eks
-  SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+name: Checks
+
+on:
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  Testing:
+
+  misspell:
+    name: Misspell
     runs-on: ubuntu-latest
     steps:
-      - name: Code checkout
-        uses: actions/checkout@v4
-
-      - name: Set Java 17
-        uses: actions/setup-java@v4
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          distribution: 'temurin' # See 'Supported distributions' for available
-          java-version: '17'
+          persist-credentials: false
 
-      - name: Maven test
-        run: mvn test
-
-      - name: Checkstyle
-        run: mvn checkstyle:checkstyle
-
-      - name: setup SonarQube
-        uses: SonarSource/sonarqube-scan-action@v3
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_URL }}
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          args: >
-            -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }}
-            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
-            -Dsonar.sources=src/
-            -Dsonar.junit.reportsPath=target/surefire-reports/
-            -Dsonar.jacoco.reportsPath=target/jacoco.exec
-            -Dsonar.java.checkstyle.reportPaths=target/checkstyle-result.xml
-            -Dsonar.java.binaries=target/test-classes/com/visualpathit/account
+          go-version: '1.22'  # أو الإصدار المناسب لمشروعك
 
-# Check the Quality Gate status.
-      - name: SonarQube Quality Gate check
-        id: sonarqube-quality-gate-check
-        uses: sonarsource/sonarqube-quality-gate-action@master
-        # Force to fail step after specific time.
-        timeout-minutes: 5
-        continue-on-error: true
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_URL }} #OPTIONAL
+      - name: Build misspell tool
+        run: |
+          cd internal/tools
+          go build -o bin/misspell github.com/client9/misspell/cmd/misspell
 
+      - name: Run misspell
+        run: |
+          # استخراج نفس قائمة الملفات المستثناء من الـ Makefile أو فحص المجلدات مباشرة
+          DOCS=$(find . -type f -name '*.md' -not -path './.github/*' -not -path '*/node_modules/*' -not -path '*/_build/*' -not -path '*/deps/*' -not -path */Pods/* -not -path */.expo/*)
+          ./internal/tools/bin/misspell -error $DOCS
 
-  BUILD_AND_PUBLISH:
-    needs: Testing
+  checklinks:
+    name: lychee
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
     steps:
-      - name: Code checkout
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          role-to-assume: ${{ secrets.PRINCIPAL_SECRET_NAME }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: upload image to ECR
-        uses: appleboy/docker-ecr-action@master
+          persist-credentials: false
+      - name: Restore lychee cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        id: cache-restore
         with:
-          registry: ${{ secrets.REGISTRY }}
-          repo: ${{env.ECR_REPOSITORY}}
-          region: ${{ env.AWS_REGION }}
-          tags: latest,${{ github.run_number }}
-          daemon_off: false
-          dockerfile: ./Dockerfile
-          context: ./
+          path: .lycheecache
+          key: ${{ runner.os }}-lychee-${{ hashFiles('.lychee.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-lychee-
+      - name: Run lychee
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8  # v2.9.0
+        with:
+          args: --config .lychee.toml --cache --max-cache-age 3d --cache-exclude-status 300..=599 .
+          fail: true
+      - name: Save lychee cache
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .lycheecache
+          key: ${{ steps.cache-restore.outputs.cache-primary-key }}
 
+  checklicense:
+    name: Check license
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'  # حدد إصدار Go المناسب لمشروعك
+
+      - name: Build addlicense tool
+        run: |
+          cd internal/tools
+          go build -o bin/addlicense github.com/google/addlicense
+
+      - name: Run checklicense
+        run: |
+          ./internal/tools/bin/addlicense -check -c "The OpenTelemetry Authors" -l apache -s=only -y "" \
+            -ignore node_modules/** \
+            -ignore .expo/** \
+            -ignore Pods/** \
+            -ignore ".chloggen/**" \
+            -ignore **/extras/** \
+            -ignore **/vendor/** \
+            -ignore **/.venv/** \
+            -ignore **/dist/** \
+            -ignore **/build/** \
+            -ignore **/*_pb2.py \
+            -ignore **/*_pb2_grpc.py \
+            -ignore **/genproto/** \
+            -ignore **/protos/*.ts \
+            .
+
+  weaver-check:
+    name: Weaver check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run Weaver registry check
+        env:
+          GITHUB_WORKSPACE_PATH: ${{ github.workspace }}
+        run: |
+          # Reuse the Dependabot-tracked weaver pin from the telemetry-docs Dockerfile so this
+          # check never drifts from the version used to actually generate the docs.
+          WEAVER_IMAGE=$(grep -oP '(?<=^FROM )\S*otel/weaver\S*' src/telemetry-docs/Dockerfile)
+          docker run --rm \
+            --mount "type=bind,source=${GITHUB_WORKSPACE_PATH}/telemetry-schema,target=/home/weaver/source,readonly" \
+            "${WEAVER_IMAGE}" \
+            registry check -r source
+
+  build-test:
+    name: build-test
+    needs: [
+      misspell,
+      checklinks,
+      checklicense,
+      weaver-check
+    ]
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report CI status
+        shell: bash
+        env:
+          CI_SUCCESS: ${{ !contains(needs.*.result, 'failure') }}
+        run: |
+          if [ "${CI_SUCCESS}" == "true" ]
+          then
+            echo 'Build complete ✓'
+          else
+            echo 'Build failed ✗'
+            exit 1
+          fi
