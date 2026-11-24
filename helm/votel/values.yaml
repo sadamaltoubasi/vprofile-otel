@@ -1,0 +1,23 @@
+components:
+  vprodb:
+    enabled: true
+    image: vprofile/vprofiledb
+    port: 3306
+    env:
+      MYSQL_ROOT_PASSWORD: vprodbpass
+      MYSQL_DATABASE: accounts
+  vpromq01:
+    enabled: true
+    image: rabbitmq:3-management
+    port: 5672
+    env:
+      RABBITMQ_DEFAULT_USER: test
+      RABBITMQ_DEFAULT_PASS: test
+  vpromc:
+    enabled: true
+    image: memcached
+    port: 11211
+  vproapp:
+    enabled: true
+    image: myrepo/vproapp:1.0
+    port: 8080
