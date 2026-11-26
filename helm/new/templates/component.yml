@@ -1,0 +1,9 @@
+{{- range $name, $config := .Values.components }}
+{{- if $config.enabled -}}
+    {{- $component := dict "name" ($name | lower) "config" $config "serviceAccountName" (include "new.serviceAccountName" $) -}}
+
+    {{- include "new.deployment" $component -}}
+    {{- include "new.service" $component -}}
+
+{{- end }}
+{{- end }}
